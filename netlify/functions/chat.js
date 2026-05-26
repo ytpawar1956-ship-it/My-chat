@@ -11,29 +11,27 @@ exports.handler = async (event) => {
 
   try {
     const { messages } = JSON.parse(event.body);
+    const apiKey = process.env.GEMINI_API_KEY;
 
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": process.env.ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 1024,
-        system:
-          "You are a web search assistant. For EVERY user query, always use the web_search tool to find current, real information before answering. Never answer from memory alone — always search first. After searching, provide a clear, concise answer and list your sources at the end under a 'Sources:' section with the URLs.",
-        tools: [
-          {
-            type: "web_search_20250305",
-            name: "web_search",
-            max_uses: 3,
+    const geminiMessages = messages.map((m) => ({
+      role: m.role === "assistant" ? "model" : "user",
+      parts: [{ text: m.content }],
+    }));
+
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: geminiMessages,
+          tools: [{ google_search: {} }],
+          systemInstruction: {
+            parts: [{ text: "You are a helpful web search assistant. Always search the web for current information before answering. Provide clear, concise answers with sources." }],
           },
-        ],
-        messages,
-      }),
-    });
+        }),
+      }
+    );
 
     if (!response.ok) {
       const err = await response.json();
@@ -45,21 +43,13 @@ exports.handler = async (event) => {
     }
 
     const data = await response.json();
-
-    const reply = data.content
-      .filter((block) => block.type === "text")
-      .map((block) => block.text)
-      .join("\n")
-      .trim();
+    const reply = data.candidates?.[0]?.content?.parts?.[0]?.text || "No response";
 
     const sources = [];
-    for (const block of data.content) {
-      if (block.type === "tool_result" || block.type === "server_tool_use") continue;
-      if (block.type === "web_search_tool_result") {
-        const results = block.content || [];
-        for (const r of results) {
-          if (r.url) sources.push({ title: r.title || r.url, url: r.url });
-        }
+    const chunks = data.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+    for (const chunk of chunks) {
+      if (chunk.web) {
+        sources.push({ title: chunk.web.title || chunk.web.uri, url: chunk.web.uri });
       }
     }
 
